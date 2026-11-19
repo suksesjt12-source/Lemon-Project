@@ -1265,6 +1265,40 @@ bool Device::GetSuitability(bool requires_swapchain) {
     // Driver detection variables for workarounds in GetSuitability
     const VkDriverId driver_id = properties.driver.driverID;
 
+    // ARM proprietary Mali drivers (including Mali-G52/G57) have shown
+    // instability with selected optional Vulkan features. Keep the baseline
+    // Vulkan path and let the renderer use its existing fallback paths.
+    if (driver_id == VK_DRIVER_ID_ARM_PROPRIETARY) {
+        LOG_WARNING(Render_Vulkan,
+                    "ARM proprietary driver detected: disabling selected optional Vulkan features");
+
+        RemoveExtensionFeature(extensions.extended_dynamic_state2,
+                               features.extended_dynamic_state2,
+                               VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
+        RemoveExtensionFeature(extensions.extended_dynamic_state3,
+                               features.extended_dynamic_state3,
+                               VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+        RemoveExtensionFeature(extensions.provoking_vertex, features.provoking_vertex,
+                               VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
+
+        const char* robustness2_extension_name =
+            loaded_extensions.contains(VK_KHR_ROBUSTNESS_2_EXTENSION_NAME)
+                ? VK_KHR_ROBUSTNESS_2_EXTENSION_NAME
+                : VK_EXT_ROBUSTNESS_2_EXTENSION_NAME;
+        RemoveExtensionFeature(extensions.robustness_2, features.robustness2,
+                               robustness2_extension_name);
+
+        dynamic_state3_blending = false;
+        dynamic_state3_enables = false;
+        dynamic_state3_depth_clamp_enable = false;
+        dynamic_state3_logic_op_enable = false;
+        dynamic_state3_line_raster_mode = false;
+        dynamic_state3_conservative_raster_mode = false;
+        dynamic_state3_line_stipple_enable = false;
+        dynamic_state3_alpha_to_coverage = false;
+        dynamic_state3_alpha_to_one = false;
+    }
+
     // VK_EXT_extended_dynamic_state2 below this will appear drivers that need workarounds.
 
     // VK_EXT_extended_dynamic_state3 below this will appear drivers that need workarounds.
