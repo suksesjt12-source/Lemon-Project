@@ -1302,6 +1302,41 @@ bool Device::GetSuitability(bool requires_swapchain) {
         features.extended_dynamic_state3.extendedDynamicState3LogicOpEnable = false;
     }
 
+    // ARM's proprietary Mali driver has known compatibility issues with these optional
+    // feature paths on some Mali generations. Remove both the device extensions and their
+    // feature structs so they cannot be re-enabled later during vkCreateDevice.
+    if (driver_id == VK_DRIVER_ID_ARM_PROPRIETARY) {
+        LOG_WARNING(Render_Vulkan,
+                    "ARM Mali: disabling extended dynamic state 2/3, provoking vertex, "
+                    "and robustness2 nullDescriptor for driver compatibility");
+
+        RemoveExtensionFeature(extensions.extended_dynamic_state2,
+                               features.extended_dynamic_state2,
+                               VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
+        RemoveExtensionFeature(extensions.extended_dynamic_state3,
+                               features.extended_dynamic_state3,
+                               VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+        RemoveExtensionFeature(extensions.provoking_vertex, features.provoking_vertex,
+                               VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
+
+        const char* robustness2_extension_name =
+            loaded_extensions.contains(VK_KHR_ROBUSTNESS_2_EXTENSION_NAME)
+                ? VK_KHR_ROBUSTNESS_2_EXTENSION_NAME
+                : VK_EXT_ROBUSTNESS_2_EXTENSION_NAME;
+        RemoveExtensionFeature(extensions.robustness_2, features.robustness2,
+                               robustness2_extension_name);
+
+        dynamic_state3_blending = false;
+        dynamic_state3_enables = false;
+        dynamic_state3_depth_clamp_enable = false;
+        dynamic_state3_logic_op_enable = false;
+        dynamic_state3_line_raster_mode = false;
+        dynamic_state3_conservative_raster_mode = false;
+        dynamic_state3_line_stipple_enable = false;
+        dynamic_state3_alpha_to_coverage = false;
+        dynamic_state3_alpha_to_one = false;
+    }
+
     // Return whether we were suitable.
     return suitable;
 }
@@ -1578,12 +1613,29 @@ void Device::SetupFamilies(VkSurfaceKHR surface) {
 }
 
 bool Device::TryReserveCustomBorderColorSamplers(size_t count) const {
-    const size_t limit = properties.custom_border_color.maxCustomBorderColorSamplers;
-    if (limit == 0) {
-        return true;
+    const bool is_arm_mali = properties.driver.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
+    const size_t reported_limit = properties.custom_border_color.maxCustomBorderColorSamplers;
+
+    // Preserve the existing unlimited/unspecified interpretation for non-Mali drivers.
+    // On Mali, a reported zero means no custom-border sampler budget is available.
+    if (reported_limit == 0) {
+        return !is_arm_mali;
     }
+
+    size_t limit = reported_limit;
+    if (is_arm_mali) {
+        // Keep most of the device's sampler-object allocation budget available for ordinary
+        // samplers. The custom-border limit must never exceed the Vulkan implementation limit.
+        constexpr size_t kMaliSamplerBudgetDivisor = 8;
+        const size_t sampler_allocation_limit =
+            static_cast<size_t>(properties.properties.limits.maxSamplerAllocationCount);
+        const size_t mali_sampler_budget =
+            std::max<size_t>(1, sampler_allocation_limit / kMaliSamplerBudgetDivisor);
+        limit = std::min(limit, mali_sampler_budget);
+    }
+
     size_t used = custom_border_color_samplers_used.load(std::memory_order_relaxed);
-    while (used + count <= limit) {
+    while (used <= limit && count <= limit - used) {
         if (custom_border_color_samplers_used.compare_exchange_weak(
                 used, used + count, std::memory_order_relaxed, std::memory_order_relaxed)) {
             return true;
